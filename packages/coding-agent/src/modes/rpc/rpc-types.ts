@@ -208,6 +208,12 @@ export interface RpcSubagentMessagesResult {
 	messages: AgentMessage[];
 }
 
+export interface RpcAbortAndPromptData {
+	agentInvoked: boolean;
+	abortedTurnId: string | null;
+	replacementTurnId: string | null;
+}
+
 export type RpcCommandWorkerAction = "message" | "steer" | "follow_up" | "interrupt" | "resume" | "cancel" | "kill";
 
 export type RpcWorkerCommand = Extract<RpcCommand, { type: "create_worker" | "command_worker" }>;
@@ -294,7 +300,7 @@ export type RpcResponse =
 			type: "response";
 			command: "abort_and_prompt";
 			success: true;
-			data: { agentInvoked: boolean; abortedTurnId: string | null; replacementTurnId: string };
+			data: RpcAbortAndPromptData;
 	  }
 	| { id?: string; type: "response"; command: "new_session"; success: true; data: { cancelled: boolean } }
 

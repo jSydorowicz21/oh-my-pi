@@ -20,6 +20,7 @@ import {
 	type RpcMessagesPageOptions,
 } from "./rpc-messages";
 import type {
+	RpcAbortAndPromptData,
 	RpcAvailableCommandsUpdateFrame,
 	RpcAvailableSlashCommand,
 	RpcCommand,
@@ -636,10 +637,11 @@ export class RpcClient {
 	}
 
 	/**
-	 * Abort current operation and immediately start a new turn with the given message.
+	 * Abort the active turn and resolve once the replacement prompt either starts an agent turn or completes locally.
 	 */
-	async abortAndPrompt(message: string, images?: ImageContent[]): Promise<void> {
-		await this.#send({ type: "abort_and_prompt", message, images });
+	async abortAndPrompt(message: string, images?: ImageContent[]): Promise<RpcAbortAndPromptData> {
+		const response = await this.#send({ type: "abort_and_prompt", message, images });
+		return this.#getData<RpcAbortAndPromptData>(response);
 	}
 
 	/**

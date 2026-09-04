@@ -48,6 +48,7 @@ import { pageRpcMessages, RPC_MESSAGES_PAGE_BUSY_ERROR, RpcMessagesPageError } f
 import { RpcSubagentRegistry, readRpcSubagentTranscript } from "./rpc-subagents";
 import { RpcWorkerController, RpcWorkerError } from "./rpc-workers";
 import type {
+	RpcAbortAndPromptData,
 	RpcCommand,
 	RpcExtensionUIRequest,
 	RpcExtensionUIResponse,
@@ -322,6 +323,59 @@ export function watchAndReportLocalOnlyPromptResult(input: {
 		hasExtensionAgentMessageTask: trackedPrompt.hasAgentMessageTask,
 		waitForExtensionAgentMessageTasks: trackedPrompt.waitForAgentMessageTasks,
 	});
+}
+
+type RpcAbortAndPromptSession = Pick<
+	AgentSession,
+	"abort" | "prompt" | "subscribe" | "isStreaming" | "isCompacting" | "sessionManager"
+>;
+
+/** Abort the active turn and resolve only after the replacement starts or completes locally. */
+export async function abortAndStartRpcPrompt(input: {
+	session: RpcAbortAndPromptSession;
+	command: Extract<RpcCommand, { type: "abort_and_prompt" }>;
+	extensionUserMessageTracker: RpcExtensionUserMessageTracker;
+	onError: (error: Error) => void;
+}): Promise<RpcAbortAndPromptData> {
+	const abortedTurnId =
+		input.session.isStreaming || input.session.isCompacting ? input.session.sessionManager.getLeafId() : null;
+	await input.session.abort({ reason: USER_INTERRUPT_LABEL });
+
+	const started = Promise.withResolvers<string>();
+	let sawAgentStart = false;
+	const unsubscribe = input.session.subscribe(event => {
+		if (sawAgentStart || event.type !== "agent_start") return;
+		sawAgentStart = true;
+		started.resolve(input.session.sessionManager.getLeafId() ?? (Snowflake.next() as string));
+	});
+	const trackedPrompt = input.extensionUserMessageTracker.watchPrompt(() =>
+		input.session.prompt(input.command.message, { images: input.command.images }),
+	);
+	const promptOutcome = trackedPrompt.prompt.then(async agentInvoked => {
+		if (agentInvoked) return true;
+		await trackedPrompt.waitForAgentMessageTasks();
+		return trackedPrompt.hasAgentMessageTask();
+	});
+
+	try {
+		const outcome = await Promise.race([
+			started.promise.then(replacementTurnId => ({ agentInvoked: true, replacementTurnId })),
+			promptOutcome.then(agentInvoked => ({
+				agentInvoked,
+				replacementTurnId: agentInvoked
+					? (input.session.sessionManager.getLeafId() ?? (Snowflake.next() as string))
+					: null,
+			})),
+		]);
+		if (outcome.agentInvoked) {
+			void trackedPrompt.prompt.catch(error =>
+				input.onError(error instanceof Error ? error : new Error(String(error))),
+			);
+		}
+		return { ...outcome, abortedTurnId };
+	} finally {
+		unsubscribe();
+	}
 }
 
 /**
@@ -1204,11 +1258,13 @@ export async function runRpcMode(
 			}
 
 			case "abort_and_prompt": {
-				await session.abort({ reason: USER_INTERRUPT_LABEL });
-				session
-					.prompt(command.message, { images: command.images })
-					.catch(e => output(error(id, "abort_and_prompt", e.message)));
-				return success(id, "abort_and_prompt");
+				const data = await abortAndStartRpcPrompt({
+					session,
+					command,
+					extensionUserMessageTracker,
+					onError: promptError => output(error(id, "abort_and_prompt", promptError.message)),
+				});
+				return success(id, "abort_and_prompt", data);
 			}
 
 			case "new_session":

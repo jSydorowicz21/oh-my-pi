@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+	abortAndStartRpcPrompt,
 	RpcExtensionUserMessageTracker,
 	reportLocalOnlyPromptResult,
 	watchAndReportLocalOnlyPromptResult,
@@ -437,5 +438,74 @@ describe("watchAndReportLocalOnlyPromptResult", () => {
 		await waitForPromptHandlers(prompt);
 
 		expect(output).toEqual([]);
+	});
+});
+
+describe("abortAndStartRpcPrompt", () => {
+	test("resolves after a real replacement starts without waiting for its completion", async () => {
+		let leafId: string | null = "turn-before-abort";
+		let listener: Parameters<AgentSession["subscribe"]>[0] | undefined;
+		let completed = false;
+		const replacement = Promise.withResolvers<boolean>();
+		void replacement.promise.then(() => {
+			completed = true;
+		});
+		const session = {
+			isStreaming: true,
+			isCompacting: false,
+			sessionManager: { getLeafId: () => leafId },
+			abort: async () => {},
+			subscribe: (next: Parameters<AgentSession["subscribe"]>[0]) => {
+				listener = next;
+				return () => {
+					listener = undefined;
+				};
+			},
+			prompt: () => {
+				leafId = "replacement-user-entry";
+				listener?.({ type: "agent_start" });
+				return replacement.promise;
+			},
+		} as unknown as AgentSession;
+
+		const result = await abortAndStartRpcPrompt({
+			session,
+			command: { id: "replace-1", type: "abort_and_prompt", message: "Use the migration path" },
+			extensionUserMessageTracker: new RpcExtensionUserMessageTracker(),
+			onError: error => {
+				throw error;
+			},
+		});
+
+		expect(result).toEqual({
+			agentInvoked: true,
+			abortedTurnId: "turn-before-abort",
+			replacementTurnId: "replacement-user-entry",
+		});
+		expect(completed).toBe(false);
+		replacement.resolve(true);
+		await replacement.promise;
+	});
+
+	test("reports a local replacement without inventing a turn identity", async () => {
+		const session = {
+			isStreaming: false,
+			isCompacting: false,
+			sessionManager: { getLeafId: () => "existing-entry" },
+			abort: async () => {},
+			subscribe: () => () => {},
+			prompt: async () => false,
+		} as unknown as AgentSession;
+
+		await expect(
+			abortAndStartRpcPrompt({
+				session,
+				command: { id: "replace-local", type: "abort_and_prompt", message: "/local" },
+				extensionUserMessageTracker: new RpcExtensionUserMessageTracker(),
+				onError: error => {
+					throw error;
+				},
+			}),
+		).resolves.toEqual({ agentInvoked: false, abortedTurnId: null, replacementTurnId: null });
 	});
 });

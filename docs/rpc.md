@@ -101,9 +101,8 @@ Important edge behavior from runtime:
 
 - Unknown command responses are emitted with `id: undefined` (even if the request had an `id`).
 - Malformed JSON and synchronous dispatch failures emit `command: "parse"` with `id: undefined`. Exceptions while handling a recognized command emit a failure with that command's `type` and `id`.
-- `prompt` and `abort_and_prompt` return immediate success, then may emit a later error response with the **same** id if async prompt scheduling fails.
-- `prompt` success responses may include `data.agentInvoked`. `false` means the prompt completed locally without an agent turn; `true` means the prompt produced agent lifecycle events; omitted means the host must rely on session events for completion.
-- `abort_and_prompt` does not currently emit `data.agentInvoked` or `prompt_result`; hosts should treat it as the legacy abort-then-schedule path and rely on session events or same-id scheduling errors.
+- `prompt` returns after local handling determines whether an agent turn was invoked. Its success response may include `data.agentInvoked`; `false` means the prompt completed locally without an agent turn, `true` means the prompt produced agent lifecycle events, and omission means the host must rely on session events for completion.
+- `abort_and_prompt` waits for the aborted operation to settle, then responds when the replacement either emits `agent_start` or completes locally. Its `data` includes `agentInvoked`, the pre-abort `abortedTurnId` when one existed, and the replacement user-entry `replacementTurnId` for agent-backed prompts. A failure before replacement start is returned as the command failure; a failure after `agent_start` is emitted as a later same-id failure frame.
 
 ## Command Schema (canonical)
 
@@ -573,17 +572,18 @@ The TypeScript `RpcClient` exposes `createWorker`, `commandWorker`, and
 
 This is the most important operational behavior.
 
-### Immediate ack vs completion
+### Acceptance vs completion
 
-`prompt` and `abort_and_prompt` are **acknowledged immediately**:
+`prompt` is acknowledged after local handling determines whether it invoked an agent. `abort_and_prompt` is acknowledged after the aborted operation settles and the replacement either starts an agent turn or completes locally:
 
 ```json
-{ "id": "req_1", "type": "response", "command": "prompt", "success": true }
+{ "id": "req_1", "type": "response", "command": "abort_and_prompt", "success": true, "data": { "agentInvoked": true, "abortedTurnId": "01ABC", "replacementTurnId": "01DEF" } }
 ```
 
 That means:
 
 - command acceptance != run completion
+- `abort_and_prompt` success deterministically identifies whether a replacement turn started, without waiting for that turn to finish
 - agent turns complete only on `agent_end` frames where `isTerminal !== false`
 - local-only prompts complete via `data.agentInvoked: false` on the response or via a later `prompt_result`
 
