@@ -32,6 +32,8 @@ import type {
 	RpcHostToolResult,
 	RpcHostToolUpdate,
 	RpcResponse,
+	RpcCommandWorkerData,
+	RpcCreateWorkerData,
 	RpcSessionState,
 	RpcSubagentEventFrame,
 	RpcSubagentLifecycleFrame,
@@ -39,6 +41,8 @@ import type {
 	RpcSubagentProgressFrame,
 	RpcSubagentSnapshot,
 	RpcSubagentSubscriptionLevel,
+	RpcWorkerCommand,
+	RpcWorkerFrame,
 } from "./rpc-types";
 
 /** Distributive Omit that works with union types */
@@ -99,6 +103,7 @@ export type RpcSubagentLifecycleListener = (payload: RpcSubagentLifecycleFrame["
 export type RpcSubagentProgressListener = (payload: RpcSubagentProgressFrame["payload"]) => void;
 export type RpcSubagentEventListener = (payload: RpcSubagentEventFrame["payload"]) => void;
 export type RpcAvailableCommandsUpdateListener = (commands: RpcAvailableSlashCommand[]) => void;
+export type RpcWorkerListener = (frame: RpcWorkerFrame) => void;
 
 export interface RpcClientToolContext<TDetails = unknown> {
 	toolCallId: string;
@@ -213,6 +218,15 @@ function isRpcAvailableCommandsUpdateFrame(value: unknown): value is RpcAvailabl
 	if (!isRecord(value)) return false;
 	return value.type === "available_commands_update" && Array.isArray(value.commands);
 }
+function isRpcWorkerFrame(value: unknown): value is RpcWorkerFrame {
+	if (!isRecord(value) || typeof value.workerId !== "string" || typeof value.sequence !== "number") return false;
+	return (
+		value.type === "worker_created" ||
+		value.type === "worker_lifecycle_changed" ||
+		value.type === "worker_command_effect" ||
+		value.type === "worker_transcript_updated"
+	);
+}
 
 function isRpcHostToolCallRequest(value: unknown): value is RpcHostToolCallRequest {
 	if (!isRecord(value)) return false;
@@ -277,6 +291,7 @@ export class RpcClient {
 	#subagentProgressListeners = new Set<RpcSubagentProgressListener>();
 	#subagentEventListeners = new Set<RpcSubagentEventListener>();
 	#availableCommandsUpdateListeners = new Set<RpcAvailableCommandsUpdateListener>();
+	#workerListeners = new Set<RpcWorkerListener>();
 	#pendingRequests: Map<string, { resolve: (response: RpcResponse) => void; reject: (error: Error) => void }> =
 		new Map();
 	#customTools: RpcClientCustomTool[] = [];
@@ -568,6 +583,11 @@ export class RpcClient {
 		return () => this.#availableCommandsUpdateListeners.delete(listener);
 	}
 
+	/** Subscribe to authoritative Worker creation, lifecycle, command-effect, and transcript frames. */
+	onWorkerEvent(listener: RpcWorkerListener): () => void {
+		this.#workerListeners.add(listener);
+		return () => this.#workerListeners.delete(listener);
+	}
 	/**
 	 * Get collected stderr output (useful for debugging).
 	 */
@@ -691,6 +711,23 @@ export class RpcClient {
 		return this.#getData<RpcSubagentMessagesResult>(response);
 	}
 
+	/** Create a persistent host-addressable Worker and return its acknowledgement receipt. */
+	async createWorker(
+		command: Omit<Extract<RpcWorkerCommand, { type: "create_worker" }>, "type">,
+	): Promise<RpcCreateWorkerData> {
+		const { id, ...request } = command;
+		const response = await this.#send({ type: "create_worker", ...request }, 30_000, id);
+		return this.#getData<RpcCreateWorkerData>(response);
+	}
+
+	/** Send a direct command to a Worker and return its acknowledgement receipt. */
+	async commandWorker(
+		command: Omit<Extract<RpcWorkerCommand, { type: "command_worker" }>, "type">,
+	): Promise<RpcCommandWorkerData> {
+		const { id, ...request } = command;
+		const response = await this.#send({ type: "command_worker", ...request }, 30_000, id);
+		return this.#getData<RpcCommandWorkerData>(response);
+	}
 	/**
 	 * Set model by provider and ID.
 	 */
@@ -1111,6 +1148,10 @@ export class RpcClient {
 			return;
 		}
 
+		if (isRpcWorkerFrame(data)) {
+			for (const listener of this.#workerListeners) listener(data);
+			return;
+		}
 		if (!isAgentSessionEvent(data)) return;
 
 		for (const listener of this.#sessionEventListeners) {
@@ -1124,12 +1165,14 @@ export class RpcClient {
 		}
 	}
 
-	#send(command: RpcCommandBody, timeoutMs = 30_000): Promise<RpcResponse> {
+	#send(command: RpcCommandBody, timeoutMs = 30_000, requestId?: string): Promise<RpcResponse> {
 		if (!this.#process?.stdin) {
 			throw new Error("Client not started");
 		}
 
-		const id = `req_${++this.#requestId}`;
+		const id = requestId ?? `req_${++this.#requestId}`;
+		if (!id) throw new Error("RPC request id must not be empty");
+		if (this.#pendingRequests.has(id)) throw new Error(`RPC request id is already in flight: ${id}`);
 		const fullCommand = { ...command, id } as RpcCommand;
 		const { promise, resolve, reject } = Promise.withResolvers<RpcResponse>();
 		let settled = false;

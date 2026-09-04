@@ -181,6 +181,54 @@ for await (const raw of console) {
 				});
 				continue;
 			}
+			if (frame.type === "create_worker") {
+				const workerId = "WorkerA";
+				writeFrame({
+					type: "worker_created",
+					commandId: id,
+					workerId,
+					providerWorkerId: workerId,
+					parentWorkerId: "Main",
+					sequence: 1,
+				});
+				writeFrame({
+					id,
+					type: "response",
+					command: frame.type,
+					success: true,
+					data: {
+						commandId: id,
+						workerId,
+						providerWorkerId: workerId,
+						parentWorkerId: "Main",
+						status: "acknowledged",
+					},
+				});
+				continue;
+			}
+			if (frame.type === "command_worker") {
+				writeFrame({
+					id,
+					type: "response",
+					command: frame.type,
+					success: true,
+					data: {
+						commandId: id,
+						workerId: frame.workerId,
+						action: frame.action,
+						acknowledged: true,
+					},
+				});
+				writeFrame({
+					type: "worker_command_effect",
+					commandId: id,
+					workerId: frame.workerId,
+					sequence: 2,
+					action: frame.action,
+					outcome: "effectObserved",
+				});
+				continue;
+			}
 
 			writeFrame({
 				id,

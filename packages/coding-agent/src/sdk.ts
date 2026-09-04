@@ -155,6 +155,7 @@ import {
 	type SecretObfuscator,
 } from "./secrets";
 import { AgentSession, type InitialRetryFallbackState, type PlanYolo, type Prewalk } from "./session/agent-session";
+import { bindAgentToolSession } from "./session/agent-tool-session";
 import { discoverAuthStorage as discoverAuthStorageFromConfig } from "./session/auth-broker-config";
 import type { AuthStorage } from "./session/auth-storage";
 import { DateCwdReminderInjector } from "./session/date-cwd-reminder";
@@ -3806,6 +3807,7 @@ async function createAgentSessionScoped(options: CreateAgentSessionOptions): Pro
 			advisorMcpResources: cursorMcpResources,
 			titleSystemPrompt: options.titleSystemPrompt,
 		});
+		bindAgentToolSession(session, toolSession);
 		hasSession = true;
 		// Backfill the resumed advisor spend without blocking startup: the scan
 		// runs after the session is live, so `--resume` no longer scales with the

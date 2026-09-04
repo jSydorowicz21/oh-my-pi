@@ -47,7 +47,26 @@ export type RpcCommand =
 	| { id?: string; type: "set_subagent_subscription"; level: RpcSubagentSubscriptionLevel }
 	| { id?: string; type: "get_subagents" }
 	| { id?: string; type: "get_subagent_messages"; subagentId?: string; sessionFile?: string; fromByte?: number }
-
+	| {
+			id: string;
+			type: "create_worker";
+			task: string;
+			parentWorkerId?: string;
+			name?: string;
+			agent?: string;
+			model?: string | string[];
+			thinkingLevel?: ThinkingLevel;
+			tools?: string[];
+	  }
+	| {
+			id: string;
+			type: "command_worker";
+			workerId: string;
+			action: RpcCommandWorkerAction;
+			message?: string;
+			images?: ImageContent[];
+			expectedWorkerRevision?: number;
+	  }
 	// Model
 	| { id?: string; type: "set_model"; provider: string; modelId: string }
 	| { id?: string; type: "cycle_model" }
@@ -139,6 +158,7 @@ export interface RpcPromptResultFrame {
 	type: "prompt_result";
 	id?: string;
 	agentInvoked: boolean;
+	replacementTurnId?: string;
 }
 
 export interface RpcReadyFrame {
@@ -188,6 +208,67 @@ export interface RpcSubagentMessagesResult {
 	messages: AgentMessage[];
 }
 
+export type RpcCommandWorkerAction = "message" | "steer" | "follow_up" | "interrupt" | "resume" | "cancel" | "kill";
+
+export type RpcWorkerCommand = Extract<RpcCommand, { type: "create_worker" | "command_worker" }>;
+
+export interface RpcCreateWorkerData {
+	commandId: string;
+	workerId: string;
+	providerWorkerId: string;
+	parentWorkerId: string;
+	status: "acknowledged";
+}
+
+export interface RpcCommandWorkerData {
+	commandId: string;
+	workerId: string;
+	action: RpcCommandWorkerAction;
+	acknowledged: true;
+}
+
+export interface RpcWorkerCreatedFrame {
+	type: "worker_created";
+	commandId: string;
+	workerId: string;
+	providerWorkerId: string;
+	parentWorkerId: string;
+	sequence: number;
+}
+
+export interface RpcWorkerLifecycleChangedFrame {
+	type: "worker_lifecycle_changed";
+	workerId: string;
+	status: string;
+	sequence: number;
+	isTerminal: boolean;
+	detail?: string;
+}
+
+export interface RpcWorkerCommandEffectFrame {
+	type: "worker_command_effect";
+	commandId: string;
+	workerId: string;
+	action: RpcCommandWorkerAction;
+	outcome: "effectObserved" | "rejected" | "failed" | "ambiguous" | "cancelled" | "stopped";
+	sequence: number;
+	detail?: string;
+}
+
+export interface RpcWorkerTranscriptUpdatedFrame {
+	type: "worker_transcript_updated";
+	workerId: string;
+	workerRevision: number;
+	nextByte: number;
+	sequence: number;
+}
+
+export type RpcWorkerFrame =
+	| RpcWorkerCreatedFrame
+	| RpcWorkerLifecycleChangedFrame
+	| RpcWorkerCommandEffectFrame
+	| RpcWorkerTranscriptUpdatedFrame;
+
 // ============================================================================
 // RPC Responses (stdout)
 // ============================================================================
@@ -208,7 +289,13 @@ export type RpcResponse =
 	| { id?: string; type: "response"; command: "steer"; success: true }
 	| { id?: string; type: "response"; command: "follow_up"; success: true }
 	| { id?: string; type: "response"; command: "abort"; success: true }
-	| { id?: string; type: "response"; command: "abort_and_prompt"; success: true }
+	| {
+			id?: string;
+			type: "response";
+			command: "abort_and_prompt";
+			success: true;
+			data: { agentInvoked: boolean; abortedTurnId: string | null; replacementTurnId: string };
+	  }
 	| { id?: string; type: "response"; command: "new_session"; success: true; data: { cancelled: boolean } }
 
 	// State
@@ -251,6 +338,8 @@ export type RpcResponse =
 			success: true;
 			data: RpcSubagentMessagesResult;
 	  }
+	| { id?: string; type: "response"; command: "create_worker"; success: true; data: RpcCreateWorkerData }
+	| { id?: string; type: "response"; command: "command_worker"; success: true; data: RpcCommandWorkerData }
 
 	// Model
 	| {

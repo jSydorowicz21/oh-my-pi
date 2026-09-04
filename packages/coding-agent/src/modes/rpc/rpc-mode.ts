@@ -35,6 +35,7 @@ import type { AgentSession } from "../../session/agent-session";
 import { SKILL_PROMPT_MESSAGE_TYPE, USER_INTERRUPT_LABEL } from "../../session/messages";
 import { executeAcpBuiltinSlashCommand } from "../../slash-commands/acp-builtins";
 import { buildAvailableSlashCommands } from "../../slash-commands/available-commands";
+import type { ToolSession } from "../../tools";
 import { defaultLoadModeForToolName } from "../../tools/essential-tools";
 import type { EventBus } from "../../utils/event-bus";
 import { calculateTokensPerSecond } from "../../utils/token-rate";
@@ -45,6 +46,7 @@ import { MAX_RPC_FRAME_BYTES, MAX_RPC_REASSEMBLED_BYTES, RpcFrameEncoder } from 
 import { claimRpcInput, readRpcInputFrames } from "./rpc-input";
 import { pageRpcMessages, RPC_MESSAGES_PAGE_BUSY_ERROR, RpcMessagesPageError } from "./rpc-messages";
 import { RpcSubagentRegistry, readRpcSubagentTranscript } from "./rpc-subagents";
+import { RpcWorkerController, RpcWorkerError } from "./rpc-workers";
 import type {
 	RpcCommand,
 	RpcExtensionUIRequest,
@@ -771,6 +773,7 @@ export function requestRpcDialog<T>(
  */
 export async function runRpcMode(
 	session: AgentSession,
+	toolSession: ToolSession,
 	setToolUIContext?: (uiContext: ExtensionUIContext, hasUI: boolean) => void,
 	subagentEventBus?: EventBus,
 	input: ReadableStream<Uint8Array> = claimRpcInput(),
@@ -834,6 +837,9 @@ export async function runRpcMode(
 	const hostToolBridge = new RpcHostToolBridge(output);
 	const hostUriBridge = new RpcHostUriBridge(output);
 	const subagentRegistry = subagentEventBus ? new RpcSubagentRegistry(subagentEventBus, output) : undefined;
+	const workerController = subagentEventBus
+		? new RpcWorkerController({ rootSession: toolSession, eventBus: subagentEventBus, output })
+		: undefined;
 
 	// Shutdown request flag (wrapped in object to allow mutation with const)
 	const shutdownState = { requested: false };
@@ -1086,6 +1092,34 @@ export async function runRpcMode(
 				return success(id, "negotiate_protocol", { protocolVersion: 2 });
 			}
 
+			case "create_worker": {
+				if (!workerController) return error(id, "create_worker", "Worker event bus is unavailable");
+				try {
+					return success(id, "create_worker", await workerController.createWorker(command));
+				} catch (err) {
+					return error(
+						id,
+						"create_worker",
+						err instanceof Error ? err.message : String(err),
+						err instanceof RpcWorkerError ? err.code : undefined,
+					);
+				}
+			}
+
+			case "command_worker": {
+				if (!workerController) return error(id, "command_worker", "Worker event bus is unavailable");
+				try {
+					return success(id, "command_worker", await workerController.commandWorker(command));
+				} catch (err) {
+					return error(
+						id,
+						"command_worker",
+						err instanceof Error ? err.message : String(err),
+						err instanceof RpcWorkerError ? err.code : undefined,
+					);
+				}
+			}
+
 			// =================================================================
 			// Prompting
 			// =================================================================
@@ -1288,6 +1322,13 @@ export async function runRpcMode(
 					}
 					const sessionFile = subagentRegistry.resolveSessionFile(command);
 					const transcript = await readRpcSubagentTranscript(sessionFile, command.fromByte);
+					if (
+						command.subagentId &&
+						workerController &&
+						transcript.nextByte > Math.max(0, Math.trunc(command.fromByte ?? 0))
+					) {
+						workerController.noteTranscriptRead(command.subagentId, transcript.nextByte);
+					}
 					return success(id, "get_subagent_messages", transcript);
 				} catch (err) {
 					return error(id, "get_subagent_messages", err instanceof Error ? err.message : String(err));
@@ -1577,6 +1618,7 @@ export async function runRpcMode(
 			// the process exits. dispose() also emits `session_shutdown`, so we
 			// must NOT emit it separately here or the event fires twice. Skipping
 			// dispose left OMP-owned Chromium alive after RPC shutdown (#5643).
+			await workerController?.dispose();
 			await session.dispose();
 			process.exit(0);
 		},
@@ -1618,6 +1660,7 @@ export async function runRpcMode(
 	await inputDispatcher.drain();
 	await shutdownCoordinator.drain();
 	subagentRegistry?.dispose();
+	await workerController?.dispose();
 	// Dispose the main session before exiting so the browser reaper and other
 	// bounded teardown run on the stdin-EOF path too (#5643). Idempotent: a
 	// prior pi.shutdown() through the coordinator makes this await settle

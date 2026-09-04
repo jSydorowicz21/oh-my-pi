@@ -80,7 +80,8 @@ Legacy clients may ignore the added ready fields and remain on v1. V1 retains it
 8. Available-commands updates (`{ type: "available_commands_update", commands }`), emitted at startup and whenever command metadata changes
 9. Prompt lifecycle hints (`{ type: "prompt_result", id?, agentInvoked }`) for scheduled prompts that later resolve without invoking the agent
 10. Subagent frames (`subagent_lifecycle`, `subagent_progress`, `subagent_event`), gated by `set_subagent_subscription`
-11. Builtin slash-command side channels (`command_output`, `session_info_update`, `config_update`)
+11. Host-created Worker frames (`worker_created`, `worker_lifecycle_changed`, `worker_command_effect`, `worker_transcript_updated`)
+12. Builtin slash-command side channels (`command_output`, `session_info_update`, `config_update`)
 
 ### Inbound frame categories (stdin)
 
@@ -132,6 +133,13 @@ Important edge behavior from runtime:
 - `{ id?, type: "set_subagent_subscription", level: "off" | "progress" | "events" }`
 - `{ id?, type: "get_subagents" }`
 - `{ id?, type: "get_subagent_messages", subagentId?: string, sessionFile?: string, fromByte?: number }`
+
+### Host-created Workers
+
+- `{ id: string, type: "create_worker", task: string, parentWorkerId?: string, name?: string, agent?: string, model?: string | string[], thinkingLevel?: ThinkingLevel, tools?: string[], images?: ImageContent[] }`
+- `{ id: string, type: "command_worker", workerId: string, action: "message" | "steer" | "follow_up" | "interrupt" | "resume" | "cancel" | "kill", message?: string, images?: ImageContent[], expectedWorkerRevision?: number }`
+
+Both mutations require a stable, non-empty `id`; the runtime uses it as the idempotency key.
 
 ### Model
 
@@ -535,6 +543,31 @@ Subagent forwarding defaults to `"off"`. `set_subagent_subscription` selects:
 `fromByte`, `nextByte`, `reset`, raw transcript `entries`, and converted
 `messages`. If `fromByte` exceeds the current file size, reading restarts at
 byte zero and reports `reset: true`.
+
+### Host-created Workers
+
+`create_worker` lets a protocol host create a persistent Worker without asking the
+main model to invoke `task`. It returns an acknowledgement containing the OMP
+`workerId`, provider id, parent id, and `status: "acknowledged"`. OMP then emits
+authoritative `worker_created` and `worker_lifecycle_changed` frames after the
+creation effect is observed. A nested `parentWorkerId` must identify a live Worker
+owned by the same root session.
+
+`command_worker` directly performs `message`, `steer`, `follow_up`,
+`interrupt`, `resume`, `cancel`, or `kill`. Its success response acknowledges
+acceptance only. The later `worker_command_effect` frame reports
+`effectObserved`, `rejected`, `failed`, `ambiguous`, `cancelled`, or
+`stopped`. Mutations may include `expectedWorkerRevision`; stale revisions fail
+closed with `stale_worker_revision`.
+
+Hosts MUST retain the same command id when retrying after a lost response. OMP
+deduplicates accepted mutations by that id. Hosts MUST NOT blindly retry an
+`ambiguous` effect. `sequence` orders Worker frames within the RPC connection;
+`workerRevision` advances on lifecycle, command, and transcript changes. Transcript
+frames publish the latest byte cursor but do not duplicate transcript payloads.
+
+The TypeScript `RpcClient` exposes `createWorker`, `commandWorker`, and
+`onWorkerEvent` for this surface.
 
 ## Prompt/Queue Concurrency and Ordering
 

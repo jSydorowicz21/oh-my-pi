@@ -87,6 +87,7 @@ import {
 	loadSessionExtensions,
 } from "./sdk";
 import type { AgentSession } from "./session/agent-session";
+import { getAgentToolSession } from "./session/agent-tool-session";
 import { describeAuthBrokerStartupError } from "./session/auth-broker-config";
 import type { AuthStorage } from "./session/auth-storage";
 import { describePendingToolCalls } from "./session/exit-diagnostics";
@@ -105,7 +106,7 @@ import { discoverTitleSystemPromptFile, resolvePromptInput } from "./system-prom
 import { createPersistedSubagentReviverFactory } from "./task/persisted-revive";
 import { createTelemetryExportConfig, initTelemetryExport, isTelemetryExportEnabled } from "./telemetry-export";
 import { concreteThinkingLevel, parseConfiguredThinkingLevel } from "./thinking";
-import type { LspStartupServerInfo } from "./tools";
+import type { LspStartupServerInfo, ToolSession } from "./tools";
 import { getChangelogPath, resolveStartupChangelogForDisplay, type StartupChangelogSelection } from "./utils/changelog";
 import { EventBus } from "./utils/event-bus";
 
@@ -113,6 +114,7 @@ type RunAcpMode = (createSession: AcpSessionFactory) => Promise<never>;
 type RunPrintMode = (session: AgentSession, options: PrintModeOptions) => Promise<void>;
 type RunRpcMode = (
 	session: AgentSession,
+	toolSession: ToolSession,
 	setToolUIContext?: (uiContext: ExtensionUIContext, hasUI: boolean) => void,
 	subagentEventBus?: EventBus,
 	input?: ReadableStream<Uint8Array>,
@@ -2043,10 +2045,19 @@ export async function runRootCommand(
 			}
 
 			if (mode === "rpc" || mode === "rpc-ui") {
+				// RPC Worker creation requires the exact context used to construct this Session's tools.
+				const toolSession = getAgentToolSession(session);
+				if (!toolSession) throw new Error("RPC session tool context is unavailable");
 				// Branch-only protocol runner: keep RPC host code out of normal interactive startup.
 				const runRpcMode: RunRpcMode = (await import("./modes/rpc/rpc-mode")).runRpcMode;
 				stopStartupWatchdog();
-				await runRpcMode(session, mode === "rpc-ui" ? setToolUIContext : undefined, subagentEventBus, rpcInput);
+				await runRpcMode(
+					session,
+					toolSession,
+					mode === "rpc-ui" ? setToolUIContext : undefined,
+					subagentEventBus,
+					rpcInput,
+				);
 			} else if (isInteractive) {
 				const versionCheckPromise = checkForNewVersion(VERSION).catch(() => undefined);
 				const startupChangelog = await startupChangelogPromise;
