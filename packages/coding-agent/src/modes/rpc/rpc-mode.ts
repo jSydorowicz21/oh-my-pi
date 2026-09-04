@@ -325,10 +325,7 @@ export function watchAndReportLocalOnlyPromptResult(input: {
 	});
 }
 
-type RpcAbortAndPromptSession = Pick<
-	AgentSession,
-	"abort" | "prompt" | "subscribe" | "isStreaming" | "isCompacting" | "sessionManager"
->;
+type RpcAbortAndPromptSession = Pick<AgentSession, "abort" | "prompt" | "subscribe">;
 
 /** Abort the active turn and resolve only after the replacement starts or completes locally. */
 export async function abortAndStartRpcPrompt(input: {
@@ -337,16 +334,14 @@ export async function abortAndStartRpcPrompt(input: {
 	extensionUserMessageTracker: RpcExtensionUserMessageTracker;
 	onError: (error: Error) => void;
 }): Promise<RpcAbortAndPromptData> {
-	const abortedTurnId =
-		input.session.isStreaming || input.session.isCompacting ? input.session.sessionManager.getLeafId() : null;
 	await input.session.abort({ reason: USER_INTERRUPT_LABEL });
 
-	const started = Promise.withResolvers<string>();
+	const started = Promise.withResolvers<void>();
 	let sawAgentStart = false;
 	const unsubscribe = input.session.subscribe(event => {
 		if (sawAgentStart || event.type !== "agent_start") return;
 		sawAgentStart = true;
-		started.resolve(input.session.sessionManager.getLeafId() ?? (Snowflake.next() as string));
+		started.resolve();
 	});
 	const trackedPrompt = input.extensionUserMessageTracker.watchPrompt(() =>
 		input.session.prompt(input.command.message, { images: input.command.images }),
@@ -359,20 +354,15 @@ export async function abortAndStartRpcPrompt(input: {
 
 	try {
 		const outcome = await Promise.race([
-			started.promise.then(replacementTurnId => ({ agentInvoked: true, replacementTurnId })),
-			promptOutcome.then(agentInvoked => ({
-				agentInvoked,
-				replacementTurnId: agentInvoked
-					? (input.session.sessionManager.getLeafId() ?? (Snowflake.next() as string))
-					: null,
-			})),
+			started.promise.then(() => ({ agentInvoked: true })),
+			promptOutcome.then(agentInvoked => ({ agentInvoked })),
 		]);
 		if (outcome.agentInvoked) {
 			void trackedPrompt.prompt.catch(error =>
 				input.onError(error instanceof Error ? error : new Error(String(error))),
 			);
 		}
-		return { ...outcome, abortedTurnId };
+		return outcome;
 	} finally {
 		unsubscribe();
 	}

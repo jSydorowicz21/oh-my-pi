@@ -477,11 +477,7 @@ describe("abortAndStartRpcPrompt", () => {
 			},
 		});
 
-		expect(result).toEqual({
-			agentInvoked: true,
-			abortedTurnId: "turn-before-abort",
-			replacementTurnId: "replacement-user-entry",
-		});
+		expect(result).toEqual({ agentInvoked: true });
 		expect(completed).toBe(false);
 		replacement.resolve(true);
 		await replacement.promise;
@@ -506,6 +502,6 @@ describe("abortAndStartRpcPrompt", () => {
 					throw error;
 				},
 			}),
-		).resolves.toEqual({ agentInvoked: false, abortedTurnId: null, replacementTurnId: null });
+		).resolves.toEqual({ agentInvoked: false });
 	});
 });

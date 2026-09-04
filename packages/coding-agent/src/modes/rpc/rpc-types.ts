@@ -210,8 +210,6 @@ export interface RpcSubagentMessagesResult {
 
 export interface RpcAbortAndPromptData {
 	agentInvoked: boolean;
-	abortedTurnId: string | null;
-	replacementTurnId: string | null;
 }
 
 export type RpcCommandWorkerAction = "message" | "steer" | "follow_up" | "interrupt" | "resume" | "cancel" | "kill";

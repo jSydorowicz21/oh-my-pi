@@ -102,7 +102,7 @@ Important edge behavior from runtime:
 - Unknown command responses are emitted with `id: undefined` (even if the request had an `id`).
 - Malformed JSON and synchronous dispatch failures emit `command: "parse"` with `id: undefined`. Exceptions while handling a recognized command emit a failure with that command's `type` and `id`.
 - `prompt` returns immediate success for asynchronously scheduled prompts. Consumed builtins may instead include `data.agentInvoked`; `false` means the prompt completed locally without an agent turn and `true` means the prompt produced agent lifecycle events. Other local-only prompt paths emit a later `prompt_result`.
-- `abort_and_prompt` waits for the aborted operation to settle, then responds when the replacement either emits `agent_start` or completes locally. Its `data` includes `agentInvoked`, the pre-abort `abortedTurnId` when one existed, and the replacement user-entry `replacementTurnId` for agent-backed prompts. A failure before replacement start is returned as the command failure; a failure after `agent_start` is emitted as a later same-id failure frame.
+- `abort_and_prompt` waits for the aborted operation to settle, then responds when the replacement either emits `agent_start` or completes locally. Its `data.agentInvoked` value therefore distinguishes a started replacement turn from local handling without inventing an unstable turn identity. A failure before replacement start is returned as the command failure; a failure after `agent_start` is emitted as a later same-id failure frame.
 
 ## Command Schema (canonical)
 
@@ -577,7 +577,7 @@ This is the most important operational behavior.
 `prompt` is acknowledged immediately when work is scheduled. `abort_and_prompt` is acknowledged after the aborted operation settles and the replacement either starts an agent turn or completes locally:
 
 ```json
-{ "id": "req_1", "type": "response", "command": "abort_and_prompt", "success": true, "data": { "agentInvoked": true, "abortedTurnId": "01ABC", "replacementTurnId": "01DEF" } }
+{ "id": "req_1", "type": "response", "command": "abort_and_prompt", "success": true, "data": { "agentInvoked": true } }
 ```
 
 That means:
